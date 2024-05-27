@@ -1,0 +1,135 @@
+--- a/net/batman-adv/soft-interface.c
++++ b/net/batman-adv/soft-interface.c
+@@ -269,6 +269,13 @@ static netdev_tx_t batadv_interface_tx(s
+ 		goto dropped;
+ 
+ 	gw_mode = atomic_read(&bat_priv->gw.mode);
++	dhcp_rcp = batadv_gw_dhcp_recipient_get(skb, &header_len,
++						chaddr);
++	/* skb->data may have been modified by
++	* batadv_gw_dhcp_recipient_get()
++	*/
++	ethhdr = eth_hdr(skb);
++
+ 	if (is_multicast_ether_addr(ethhdr->h_dest)) {
+ 		/* if gw mode is off, broadcast every packet */
+ 		if (gw_mode == BATADV_GW_MODE_OFF) {
+@@ -276,12 +283,6 @@ static netdev_tx_t batadv_interface_tx(s
+ 			goto send;
+ 		}
+ 
+-		dhcp_rcp = batadv_gw_dhcp_recipient_get(skb, &header_len,
+-							chaddr);
+-		/* skb->data may have been modified by
+-		 * batadv_gw_dhcp_recipient_get()
+-		 */
+-		ethhdr = eth_hdr(skb);
+ 		/* if gw_mode is on, broadcast any non-DHCP message.
+ 		 * All the DHCP packets are going to be sent as unicast
+ 		 */
+--- a/net/batman-adv/gateway_client.c
++++ b/net/batman-adv/gateway_client.c
+@@ -683,14 +683,12 @@ bool batadv_gw_out_of_range(struct batad
+ 			    struct sk_buff *skb)
+ {
+ 	struct batadv_neigh_node *neigh_curr = NULL;
+-	struct batadv_neigh_node *neigh_old = NULL;
++	struct batadv_neigh_node *neigh_dst = NULL;
+ 	struct batadv_orig_node *orig_dst_node = NULL;
+ 	struct batadv_gw_node *gw_node = NULL;
+ 	struct batadv_gw_node *curr_gw = NULL;
+-	struct batadv_neigh_ifinfo *curr_ifinfo, *old_ifinfo;
+ 	struct ethhdr *ethhdr = (struct ethhdr *)skb->data;
+ 	bool out_of_range = false;
+-	u8 curr_tq_avg;
+ 	unsigned short vid;
+ 
+ 	vid = batadv_get_vid(skb, 0);
+@@ -709,22 +707,26 @@ bool batadv_gw_out_of_range(struct batad
+ 
+ 	switch (atomic_read(&bat_priv->gw.mode)) {
+ 	case BATADV_GW_MODE_SERVER:
+-		/* If we are a GW then we are our best GW. We can artificially
+-		 * set the tq towards ourself as the maximum value
++		/* If we are a GW then we want to be our best GW.
++		 * We will use `sob` for comparison:
++		 * - for IV it will take the local interface TQ, which is close
++		 * 	 to the maximum (255)
++		 * - for V it will compare the local interface throughput with
++		 * 	 the original destination throughput, which seems to be
++		 * 	 a fare bet in terms of version V routing approach.
+ 		 */
+-		curr_tq_avg = BATADV_TQ_MAX_VALUE;
+-		break;
++
+ 	case BATADV_GW_MODE_CLIENT:
+ 		curr_gw = batadv_gw_get_selected_gw_node(bat_priv);
+ 		if (!curr_gw)
+ 			goto out;
+ 
+-		/* packet is going to our gateway */
++		/* packet is going to the current gateway */
+ 		if (curr_gw->orig_node == orig_dst_node)
+ 			goto out;
+ 
+ 		/* If the dhcp packet has been sent to a different gw,
+-		 * we have to evaluate whether the old gw is still
++		 * we have to evaluate whether the destination gw is still
+ 		 * reliable enough
+ 		 */
+ 		neigh_curr = batadv_find_router(bat_priv, curr_gw->orig_node,
+@@ -732,13 +734,13 @@ bool batadv_gw_out_of_range(struct batad
+ 		if (!neigh_curr)
+ 			goto out;
+ 
+-		curr_ifinfo = batadv_neigh_ifinfo_get(neigh_curr,
+-						      BATADV_IF_DEFAULT);
+-		if (!curr_ifinfo)
++		neigh_dst = batadv_find_router(bat_priv, orig_dst_node, NULL);
++		if (!neigh_dst)
+ 			goto out;
+ 
+-		curr_tq_avg = curr_ifinfo->bat_iv.tq_avg;
+-		batadv_neigh_ifinfo_put(curr_ifinfo);
++		out_of_range = !bat_priv->algo_ops->neigh.is_similar_or_better(
++									neigh_dst, BATADV_IF_DEFAULT,
++									neigh_curr, BATADV_IF_DEFAULT);
+ 
+ 		break;
+ 	case BATADV_GW_MODE_OFF:
+@@ -746,23 +748,11 @@ bool batadv_gw_out_of_range(struct batad
+ 		goto out;
+ 	}
+ 
+-	neigh_old = batadv_find_router(bat_priv, orig_dst_node, NULL);
+-	if (!neigh_old)
+-		goto out;
+-
+-	old_ifinfo = batadv_neigh_ifinfo_get(neigh_old, BATADV_IF_DEFAULT);
+-	if (!old_ifinfo)
+-		goto out;
+-
+-	if ((curr_tq_avg - old_ifinfo->bat_iv.tq_avg) > BATADV_GW_THRESHOLD)
+-		out_of_range = true;
+-	batadv_neigh_ifinfo_put(old_ifinfo);
+-
+ out:
+ 	batadv_orig_node_put(orig_dst_node);
+ 	batadv_gw_node_put(curr_gw);
+ 	batadv_gw_node_put(gw_node);
+-	batadv_neigh_node_put(neigh_old);
++	batadv_neigh_node_put(neigh_dst);
+ 	batadv_neigh_node_put(neigh_curr);
+ 	return out_of_range;
+ }
+--- a/net/batman-adv/main.h
++++ b/net/batman-adv/main.h
+@@ -181,8 +181,6 @@ enum batadv_uev_type {
+ 	BATADV_UEV_BLA,
+ };
+ 
+-#define BATADV_GW_THRESHOLD	50
+-
+ /* Number of fragment chains for each orig_node */
+ #define BATADV_FRAG_BUFFER_COUNT 8
+ /* Maximum number of fragments for one packet */
