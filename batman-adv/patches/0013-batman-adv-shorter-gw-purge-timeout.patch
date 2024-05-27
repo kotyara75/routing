@@ -1,0 +1,11 @@
+--- a/net/batman-adv/main.h
++++ b/net/batman-adv/main.h
+@@ -31,7 +31,7 @@
+ /* purge originators after time in seconds if no valid packet comes in
+  * -> TODO: check influence on BATADV_TQ_LOCAL_WINDOW_SIZE
+  */
+-#define BATADV_PURGE_TIMEOUT 200000 /* 200 seconds */
++#define BATADV_PURGE_TIMEOUT 14000 /* 14 seconds */
+ #define BATADV_TT_LOCAL_TIMEOUT 600000 /* in milliseconds */
+ #define BATADV_TT_CLIENT_ROAM_TIMEOUT 600000 /* in milliseconds */
+ #define BATADV_TT_CLIENT_TEMP_TIMEOUT 600000 /* in milliseconds */
